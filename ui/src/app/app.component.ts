@@ -11,6 +11,7 @@ import { MasterCheckboxComponent } from './master-checkbox.component';
 import { Formats, Format, Quality } from './formats';
 import { Theme, Themes } from './theme';
 import {KeyValue} from "@angular/common";
+import JSZip from 'jszip';
 
 @Component({
     selector: 'app-root',
@@ -60,6 +61,7 @@ export class AppComponent implements AfterViewInit {
   @ViewChild('doneClearFailed') doneClearFailed: ElementRef;
   @ViewChild('doneRetryFailed') doneRetryFailed: ElementRef;
   @ViewChild('doneDownloadSelected') doneDownloadSelected: ElementRef;
+  @ViewChild('doneDownloadSelectedZip') doneDownloadSelectedZip: ElementRef;
 
   faTrashAlt = faTrashAlt;
   faCheckCircle = faCheckCircle;
@@ -243,6 +245,9 @@ export class AppComponent implements AfterViewInit {
   doneSelectionChanged(checked: number) {
     this.doneDelSelected.nativeElement.disabled = checked == 0;
     this.doneDownloadSelected.nativeElement.disabled = checked == 0;
+    if (this.doneDownloadSelectedZip) {
+      this.doneDownloadSelectedZip.nativeElement.disabled = checked == 0;
+    }
   }
 
   setQualities() {
@@ -336,6 +341,75 @@ export class AppComponent implements AfterViewInit {
     }
 
     return baseDir + encodeURIComponent(download.filename);
+  }
+
+  async downloadSelectedFilesAsZip() {
+    const selected: Download[] = [];
+    this.downloads.done.forEach((dl) => {
+      if (dl.status === 'finished' && dl.checked && dl.filename) {
+        selected.push(dl);
+      }
+    });
+
+    if (selected.length === 0) {
+      alert('No completed downloads selected.');
+      return;
+    }
+
+    if (this.doneDownloadSelectedZip) {
+      this.doneDownloadSelectedZip.nativeElement.disabled = true;
+    }
+
+    try {
+      const zip = new JSZip();
+      const concurrency = Math.min(3, selected.length);
+      let index = 0;
+
+      const worker = async () => {
+        while (true) {
+          const i = index++;
+          if (i >= selected.length) break;
+          const dl = selected[i];
+          const url = this.buildDownloadLink(dl);
+          const resp = await fetch(url, { credentials: 'include' });
+          if (!resp.ok) {
+            throw new Error(`Failed to fetch ${dl.filename}: ${resp.status} ${resp.statusText}`);
+          }
+          const blob = await resp.blob();
+          const folder = (dl.folder || '').toString().trim();
+          const safeFolder = folder
+            .replace(/^[./\\]+/g, '')
+            .replace(/\\/g, '/')
+            .replace(/\/+$/g, '');
+          const zipPath = safeFolder ? `${safeFolder}/${dl.filename}` : dl.filename;
+          zip.file(zipPath, blob);
+        }
+      };
+
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const zipName = `metube-selected-${selected.length}-${stamp}.zip`;
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+
+      a.href = url;
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert(`Error creating ZIP: ${err}`);
+    } finally {
+      if (this.doneDownloadSelectedZip) {
+        let checked = 0;
+        this.downloads.done.forEach((dl) => { if (dl.checked) checked++; });
+        this.doneDownloadSelectedZip.nativeElement.disabled = checked === 0;
+      }
+    }
   }
 
   identifyDownloadRow(index: number, row: KeyValue<string, Download>) {
